@@ -5,6 +5,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URLDecoder;
+import java.util.Arrays;
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
@@ -12,6 +13,22 @@ import javax.servlet.http.HttpServletResponse;
 
 public class DisplayFileServlet extends HttpServlet {
     
+	private String getFfmpegPath() {
+	    String[] paths = {
+	        "/opt/homebrew/bin/ffmpeg", 
+	        "/usr/local/bin/ffmpeg", 
+	        "/usr/bin/ffmpeg"
+	    };
+
+	    for (String path : paths) {
+	        File f = new File(path);
+	        if (f.exists() && f.canExecute()) {
+	            return path; 
+	        }
+	    }
+	    return "/opt/homebrew/bin/ffmpeg"; 
+	}
+
     protected void doGet(HttpServletRequest request, HttpServletResponse response) 
             throws ServletException, IOException {
         
@@ -27,90 +44,92 @@ public class DisplayFileServlet extends HttpServlet {
             return;
         }
 
-        // --- THUMBNAIL LOGIC ---
+        String etag = "W/\"" + file.length() + "-" + file.lastModified() + "\"";
+        if (etag.equals(request.getHeader("If-None-Match"))) {
+            response.setStatus(HttpServletResponse.SC_NOT_MODIFIED);
+            return;
+        }
+        response.setHeader("ETag", etag);
+        response.setHeader("Cache-Control", "public, max-age=86400");
+
         if ("thumb".equals(type)) {
             handleThumbnailRequest(file, response);
             return;
+        } else if ("waveform".equals(type)) {
+            handleWaveformRequest(file, response);
+            return;
         }
 
-        // --- STANDARD STREAMING LOGIC ---
         String name = file.getName().toLowerCase();
         String contentType = getServletContext().getMimeType(name);
-        
         if (name.endsWith(".mp3")) contentType = "audio/mpeg";
         else if (name.endsWith(".mov")) contentType = "video/quicktime";
         else if (name.endsWith(".mp4")) contentType = "video/mp4";
-        else if (name.endsWith(".mkv")) contentType = "video/x-matroska";
+        else if (name.endsWith(".mpg") || name.endsWith(".mpeg")) contentType = "video/mpeg";
 
-        String range = request.getHeader("Range");
-        if (range == null) {
-            response.setContentType(contentType != null ? contentType : "application/octet-stream");
-            response.setContentLengthLong(file.length());
-            response.setHeader("Accept-Ranges", "bytes");
-            streamFile(file, response.getOutputStream());
+        if (request.getHeader("Range") != null) {
+            handleRangeRequest(file, request.getHeader("Range"), contentType, response);
         } else {
-            handleRangeRequest(file, range, contentType, response);
+            response.setContentType(contentType);
+            response.setContentLengthLong(file.length());
+            streamFile(file, response.getOutputStream());
+        }
+    }
+
+    private void handleWaveformRequest(File mp3File, HttpServletResponse response) throws IOException {
+        String tmpDir = System.getProperty("java.io.tmpdir");
+        String waveName = "wave_" + Math.abs(mp3File.getAbsolutePath().hashCode()) + ".png";
+        File cacheFile = new File(tmpDir, waveName);
+
+        if (!cacheFile.exists()) {
+            try {
+                ProcessBuilder pb = new ProcessBuilder(
+                    getFfmpegPath(), "-i", mp3File.getAbsolutePath(),
+                    "-filter_complex", "showwavespic=s=640x240:colors=white", 
+                    "-frames:v", "1", "-y", cacheFile.getAbsolutePath()
+                );
+                pb.redirectErrorStream(true);
+                pb.start().waitFor();
+            } catch (Exception e) { e.printStackTrace(); }
+        }
+
+        if (cacheFile.exists()) {
+            response.setContentType("image/png");
+            streamFile(cacheFile, response.getOutputStream());
         }
     }
 
     private void handleThumbnailRequest(File videoFile, HttpServletResponse response) throws IOException {
-        // 1. First, look for a matching image file in the same folder (Your specific request)
-        String fileName = videoFile.getName();
-        int dotIndex = fileName.lastIndexOf(".");
-        String baseName = (dotIndex == -1) ? fileName : fileName.substring(0, dotIndex);
-        
-        File parentDir = videoFile.getParentFile();
-        String[] imgExts = {".jpg", ".jpeg", ".png", ".JPG", ".PNG"};
-        File sourceThumb = null;
-
-        for (String ext : imgExts) {
-            File check = new File(parentDir, baseName + ext);
-            if (check.exists()) {
-                sourceThumb = check;
-                break;
-            }
-        }
-
-        if (sourceThumb != null) {
-            response.setContentType(sourceThumb.getName().toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg");
-            streamFile(sourceThumb, response.getOutputStream());
-            return;
-        }
-
-        // 2. If no image exists, generate one using FFMPEG with the ABSOLUTE PATH
-        generateFfmpegThumbnail(videoFile, response);
-    }
-
-    private void generateFfmpegThumbnail(File videoFile, HttpServletResponse response) throws IOException {
         String tmpDir = System.getProperty("java.io.tmpdir");
-        String thumbName = "cache_thumb_" + Math.abs(videoFile.getAbsolutePath().hashCode()) + ".jpg";
+        String thumbName = "thumb_" + Math.abs(videoFile.getAbsolutePath().hashCode()) + ".jpg";
         File cacheFile = new File(tmpDir, thumbName);
 
         if (!cacheFile.exists()) {
-            try {
-                // FIXED: Using your specific Mac Homebrew path
-                ProcessBuilder pb = new ProcessBuilder(
-                    "/opt/homebrew/bin/ffmpeg", 
-                    "-y", 
-                    "-ss", "00:00:02", 
-                    "-i", videoFile.getAbsolutePath(), 
-                    "-vframes", "1", 
-                    "-s", "320x180", 
-                    cacheFile.getAbsolutePath()
-                );
-                
-                Process p = pb.start();
-                p.waitFor();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
+            
+        	try {
+        	    ProcessBuilder pb = new ProcessBuilder(
+        	        getFfmpegPath(), "-ss", "00:00:05", "-i", videoFile.getAbsolutePath(),
+        	        "-vframes", "1", "-q:v", "2", "-y", cacheFile.getAbsolutePath()
+        	    );
+        	    pb.redirectErrorStream(true);
+        	    Process p = pb.start();
+        	    
+        	    // Read the output to see the error message from FFmpeg
+        	    java.util.Scanner s = new java.util.Scanner(p.getInputStream());
+        	    while (s.hasNextLine()) {
+        	        System.out.println("FFMPEG LOG: " + s.nextLine());
+        	    }
+        	    
+        	    int exitCode = p.waitFor();
+        	    System.out.println("FFMPEG Exit Code: " + exitCode);
+        	} catch (Exception e) { 
+        	    e.printStackTrace(); 
+        	}
         }
 
         if (cacheFile.exists()) {
             response.setContentType("image/jpeg");
             streamFile(cacheFile, response.getOutputStream());
-        } else {
-            response.sendError(404);
         }
     }
 
@@ -118,9 +137,7 @@ public class DisplayFileServlet extends HttpServlet {
         try (FileInputStream is = new FileInputStream(file)) {
             byte[] buffer = new byte[65536];
             int read;
-            while ((read = is.read(buffer)) != -1) {
-                os.write(buffer, 0, read);
-            }
+            while ((read = is.read(buffer)) != -1) os.write(buffer, 0, read);
         }
     }
 
