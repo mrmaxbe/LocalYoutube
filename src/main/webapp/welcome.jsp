@@ -55,7 +55,6 @@
             margin-right: 6px;
         }
 
-        /* Added Styles for History Tabs */
         .header-tabs {
             display: flex;
             gap: 15px;
@@ -98,17 +97,20 @@
         .card a { text-decoration: none; color: inherit; display: block; }
         
         .thumbnail-container { 
-            width: 100%; aspect-ratio: 16 / 9; background-color: #2a2a2a; border-radius: 12px; 
+            width: 100%;
+            aspect-ratio: 16 / 9; background-color: #2a2a2a; border-radius: 12px; 
             overflow: hidden; display: flex; flex-direction: column; align-items: center; 
-            justify-content: center; cursor: pointer; position: relative;
+            justify-content: center; cursor: pointer;
+            position: relative;
         }
-        .thumbnail-container img { width: 100%; height: 100%; object-fit: cover; }
+        .thumbnail-container img, .thumbnail-container video { width: 100%; height: 100%; object-fit: cover; }
         .folder-thumb { font-size: 50px; }
         
         .card-info { padding: 12px 0; }
         
         .card-title { 
-            font-size: 16px; font-weight: 500; line-height: 1.4rem; max-height: 2.8rem;
+            font-size: 16px;
+            font-weight: 500; line-height: 1.4rem; max-height: 2.8rem;
             overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; 
             -webkit-box-orient: vertical; margin-bottom: 4px; color: var(--yt-text);
         }
@@ -190,7 +192,53 @@
             }
         }
 
-        // Added Function for History Tracking
+        function startPreview(container, videoSrc) {
+            const img = container.querySelector('img');
+            const overlay = container.querySelector('.play-overlay');
+            
+            let previewVideo = container.querySelector('.preview-video');
+            if (!previewVideo) {
+                previewVideo = document.createElement('video');
+                previewVideo.className = 'preview-video';
+                previewVideo.src = videoSrc;
+                previewVideo.muted = true;
+                previewVideo.loop = true;
+                previewVideo.playsInline = true;
+                previewVideo.style.width = '100%';
+                previewVideo.style.height = '100%';
+                previewVideo.style.objectFit = 'cover';
+                previewVideo.style.position = 'absolute';
+                previewVideo.style.top = '0';
+                previewVideo.style.left = '0';
+                previewVideo.style.pointerEvents = 'none';
+                
+                // Set start time to 11.33 seconds only on first load
+                previewVideo.addEventListener('loadedmetadata', function() {
+                    this.currentTime = 11.33; 
+                }, { once: true });
+
+                container.appendChild(previewVideo);
+            }
+            
+            img.style.visibility = 'hidden';
+            if(overlay) overlay.style.visibility = 'hidden';
+            previewVideo.style.display = 'block';
+            previewVideo.play().catch(e => {});
+        }
+
+        function stopPreview(container) {
+            const img = container.querySelector('img');
+            const overlay = container.querySelector('.play-overlay');
+            const previewVideo = container.querySelector('.preview-video');
+            
+            if (previewVideo) {
+                previewVideo.pause();
+                previewVideo.style.display = 'none';
+            }
+            img.style.visibility = 'visible';
+            if(overlay) overlay.style.visibility = 'visible';
+        }
+
         function logHistory(name, path) {
             fetch('recordHistory?name=' + encodeURIComponent(name) + '&path=' + encodeURIComponent(path));
         }
@@ -235,7 +283,6 @@
         File[] files = currentFolder.listFiles();
         List<File> videoList = new ArrayList<>();
 
-        // Sorting Logic: Sort by last modified date (Newest First)
         if (files != null) {
             Arrays.sort(files, new Comparator<File>() {
                 public int compare(File f1, File f2) {
@@ -276,7 +323,7 @@
             <div class="grid">
                 <%
                     if (files != null) {
-                        for (File f : files) {
+                      for (File f : files) {
                             if (f.isHidden() || f.getName().startsWith(".")) continue;
                             String fullName = f.getName();
                             String lowerName = fullName.toLowerCase();
@@ -291,7 +338,7 @@
                                             <span class="folder-thumb">📁</span>
                                         </div>
                                         <div class="card-info">
-                                            <div class="card-title"><%= displayName %></div>
+                                              <div class="card-title"><%= displayName %></div>
                                             <div class="card-meta">Folder</div>
                                         </div>
                                     </a>
@@ -300,31 +347,34 @@
                             } else {
                 %>
                                 <div class="card">
-                                    <div class="thumbnail-container">
+                                    <div class="thumbnail-container"
+                                         <% if (lowerName.endsWith(".mp4") || lowerName.endsWith(".mov") || lowerName.endsWith(".mkv") || lowerName.endsWith(".mpg") || lowerName.endsWith(".mpeg")) { 
+                                             videoList.add(f); %>
+                                             onmouseenter="startPreview(this, 'displayFile?path=<%= encodedPath %>')"
+                                             onmouseleave="stopPreview(this)"
+                                             onclick="logHistory('<%= displayName %>', '<%= encodedPath %>'); openVideoModal('displayFile?path=<%= encodedPath %>')"
+                                         <% } %>>
+                                        
                                         <% if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") || lowerName.endsWith(".png")) { %>
                                             <div class="img-trigger" 
                                                  data-src="displayFile?path=<%= encodedPath %>"
-                                                 data-name="<%= displayName %>" 
+                                                 data-name="<%= displayName %>"
                                                  onclick="logHistory('<%= displayName %>', '<%= encodedPath %>'); openModal('displayFile?path=<%= encodedPath %>', '<%= displayName %>')">
                                                 <img src="displayFile?path=<%= encodedPath %>">
                                             </div>
                                         <% } else if (lowerName.endsWith(".mp4") || lowerName.endsWith(".mov") || lowerName.endsWith(".mkv")) { 
-                                            videoList.add(f);
                                             String thumbUrl = "displayFile?path=" + encodedPath + "&type=thumb";
                                         %>
-                                            <div style="width:100%; height:100%;"
-                                                 onclick="logHistory('<%= displayName %>', '<%= encodedPath %>'); openVideoModal('displayFile?path=<%= encodedPath %>')">
-                                                <img src="<%= thumbUrl %>">
-                                                <div class="play-overlay">▶</div>
-                                            </div>
+                                            <img src="<%= thumbUrl %>">
+                                            <div class="play-overlay">▶</div>
                                         <% } else if (lowerName.endsWith(".mp3")) { %>
                                             <span style="font-size:40px; margin-bottom: 10px;">🎵</span>
                                             <audio controls onplay="logHistory('<%= displayName %>', '<%= encodedPath %>')">
-                                                <source src="displayFile?path=<%= encodedPath %>" type="audio/mpeg">
+                                                 <source src="displayFile?path=<%= encodedPath %>" type="audio/mpeg">
                                             </audio>
                                         <% } else { %>
                                             <a href="displayFile?path=<%= encodedPath %>" target="_blank" onclick="logHistory('<%= displayName %>', '<%= encodedPath %>')">
-                                                <span style="font-size:40px;">📄</span>
+                                               <span style="font-size:40px;">📄</span>
                                             </a>
                                         <% } %>
                                     </div>
@@ -334,7 +384,7 @@
                                     </div>
                                 </div>
                 <%
-                            }
+                                }
                         }
                     }
                 %>
